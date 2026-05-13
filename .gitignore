@@ -1,0 +1,15 @@
+# Build output
+/build/
+/copilot-sessions
+/a.out
+
+# Compiler metadata
+*.o
+*.d
+/compile_commands.json
+
+# Local tooling caches
+/.cache/
+
+# Local runtime logs
+/tui-run.log
