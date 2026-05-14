@@ -106,6 +106,11 @@ enum class ThemeMode {
   Light,
 };
 
+enum class ModalKind {
+  SessionDetail,
+  Help,
+};
+
 struct AppState {
   std::vector<SessionEntry> all_sessions;
   std::vector<SessionEntry> sessions;
@@ -119,6 +124,7 @@ struct AppState {
   int selected_cwd_index = 0;
   int cwd_scroll_offset = 0;
   bool modal_open = false;
+  ModalKind modal_kind = ModalKind::SessionDetail;
   int modal_scroll_offset = 0;
   bool modal_g_pending = false;
   bool resume_warning_open = false;
@@ -507,7 +513,7 @@ void open_command_mode(AppState &state) {
   state.command_mode = true;
   state.command_buffer = ":";
   state.status =
-      "Command mode. Try :theme dark, :theme light, or :open <db path>.";
+      "Command mode. Try :help, :theme dark, :theme light, or :open <db path>.";
 }
 
 void close_command_mode(AppState &state, const std::string &status) {
@@ -517,6 +523,14 @@ void close_command_mode(AppState &state, const std::string &status) {
 }
 
 bool load_sessions(AppState &state);
+
+void open_help_modal(AppState &state) {
+  state.modal_open = true;
+  state.modal_kind = ModalKind::Help;
+  state.modal_scroll_offset = 0;
+  state.modal_g_pending = false;
+  state.status = "Opened help modal.";
+}
 
 void execute_command(AppState &state, const std::string &command) {
   std::string text = trim_copy(command);
@@ -561,6 +575,11 @@ void execute_command(AppState &state, const std::string &command) {
     return;
   }
 
+  if (name == "help" && arg.empty()) {
+    open_help_modal(state);
+    return;
+  }
+
   if (name == "open") {
     if (arg.empty()) {
       state.status = "Missing database path. Use :open <db path>.";
@@ -581,7 +600,7 @@ void execute_command(AppState &state, const std::string &command) {
   }
 
   state.status =
-      "Unknown command. Use :theme dark, :theme light, or :open <db path>.";
+      "Unknown command. Use :help, :theme dark, :theme light, or :open <db path>.";
 }
 
 bool handle_command_key(uint32_t key, AppState &state) {
@@ -832,16 +851,78 @@ std::vector<std::string> build_modal_lines(const SessionDetail &detail,
   return lines;
 }
 
+std::vector<std::string> build_help_modal_lines(const AppState &state, int width) {
+  std::vector<std::string> lines;
+  const int content_width = std::max(12, width);
+
+  append_wrapped_block(lines, "Database  ", configured_db_path(state),
+                       content_width);
+  append_wrapped_block(lines, "Theme     ", theme_mode_label(state.theme_mode),
+                       content_width);
+
+  lines.push_back("");
+  lines.push_back("Browser");
+  lines.push_back("  Tab, h, l  switch focus between folders and sessions");
+  lines.push_back("  j, k       move selection");
+  lines.push_back("  u, d       page up/down");
+  lines.push_back("  :          open command mode");
+  lines.push_back("  y          yank selected session ID");
+  lines.push_back("  c          continue selected session");
+  lines.push_back("  Space      toggle full folder path preview");
+  lines.push_back("  Enter      open session detail modal");
+  lines.push_back("  r          reload the current database");
+  lines.push_back("  q          quit");
+
+  lines.push_back("");
+  lines.push_back("Command mode");
+  lines.push_back("  :help              show this help modal");
+  lines.push_back("  :theme dark        switch to dark theme");
+  lines.push_back("  :theme light       switch to light theme");
+  lines.push_back("  :open <db path>    open another session-store.db");
+
+  lines.push_back("");
+  lines.push_back("Modal");
+  lines.push_back("  j, k       scroll");
+  lines.push_back("  u, d       page up/down");
+  lines.push_back("  gg         jump to top");
+  lines.push_back("  ge         jump to bottom");
+  lines.push_back("  Enter, Esc, q  close");
+
+  lines.push_back("");
+  lines.push_back("Notes");
+  lines.push_back("  Startup database order:");
+  lines.push_back("    1. $COPILOT_HOME/session-store.db");
+  lines.push_back("    2. $HOME/.copilot/session-store.db");
+  lines.push_back("  :open accepts absolute, relative, and ~/ paths.");
+
+  return lines;
+}
+
+const char *modal_title(const AppState &state) {
+  return state.modal_kind == ModalKind::Help ? " Help " : " Session Detail Modal ";
+}
+
+std::string modal_subject(const AppState &state) {
+  return state.modal_kind == ModalKind::Help ? "help" : "session detail";
+}
+
+std::vector<std::string> active_modal_lines(const AppState &state, int width) {
+  if (state.modal_kind == ModalKind::Help) {
+    return build_help_modal_lines(state, width);
+  }
+  return build_modal_lines(state.detail, width);
+}
+
 int modal_content_width(int cols) {
   const int modal_w = std::min(cols - 8, 96);
   return modal_w - 4;
 }
 
 int modal_max_scroll(const AppState &state, int cols, int modal_rows) {
-  if (!state.detail.loaded) {
+  if (state.modal_kind == ModalKind::SessionDetail && !state.detail.loaded) {
     return 0;
   }
-  const auto lines = build_modal_lines(state.detail, modal_content_width(cols));
+  const auto lines = active_modal_lines(state, modal_content_width(cols));
   return std::max(0, static_cast<int>(lines.size()) - modal_rows);
 }
 
@@ -905,6 +986,7 @@ void apply_current_filter(AppState &state) {
   state.scroll_offset = 0;
   state.detail = {};
   state.modal_open = false;
+  state.modal_kind = ModalKind::SessionDetail;
   state.modal_scroll_offset = 0;
   state.modal_g_pending = false;
 
@@ -1322,10 +1404,10 @@ void draw_modal(const AppState &state, ncplane *plane, const Theme &theme,
 
   fill_rect(plane, modal_y - 1, modal_x - 2, modal_h + 2, modal_w + 4,
             theme.base_bg);
-  draw_box(plane, modal_y, modal_x, modal_h, modal_w, " Session Detail Modal ",
+  draw_box(plane, modal_y, modal_x, modal_h, modal_w, modal_title(state),
            theme, theme.panel_alt_bg, theme.accent_2, true);
 
-  if (!state.detail.loaded) {
+  if (state.modal_kind == ModalKind::SessionDetail && !state.detail.loaded) {
     set_colors(plane, theme.alert, theme.panel_alt_bg, NCSTYLE_BOLD);
     ncplane_putstr_yx(plane, modal_y + 2, modal_x + 2,
                       "Session detail could not be loaded.");
@@ -1335,7 +1417,7 @@ void draw_modal(const AppState &state, ncplane *plane, const Theme &theme,
 
   const int content_y = modal_y + 2;
   const int content_h = modal_h - 4;
-  const auto lines = build_modal_lines(state.detail, modal_w - 4);
+  const auto lines = active_modal_lines(state, modal_w - 4);
   const int max_scroll =
       std::max(0, static_cast<int>(lines.size()) - content_h);
   const int scroll = std::clamp(state.modal_scroll_offset, 0, max_scroll);
@@ -1347,8 +1429,10 @@ void draw_modal(const AppState &state, ncplane *plane, const Theme &theme,
     }
 
     const std::string &line = lines[line_index];
-    const bool section_header = line == "Refs" || line == "Touched files" ||
-                                line == "Turns" || line == "Checkpoints";
+    const bool section_header =
+        line == "Refs" || line == "Touched files" || line == "Turns" ||
+        line == "Checkpoints" || line == "Browser" || line == "Command mode" ||
+        line == "Modal" || line == "Notes";
     const bool user_line = line.rfind("    user> ", 0) == 0;
     const bool assistant_line = line.rfind("    asst> ", 0) == 0;
 
@@ -1680,13 +1764,14 @@ bool handle_key(uint32_t key, AppState &state, int visible_rows,
       if (key == 'g') {
         state.modal_scroll_offset = 0;
         state.modal_g_pending = false;
-        state.status = "Jumped to top of session detail.";
+        state.status = "Jumped to top of " + modal_subject(state) + " modal.";
         return true;
       }
       if (key == 'e') {
         state.modal_scroll_offset = modal_max_scroll(state, cols, modal_rows);
         state.modal_g_pending = false;
-        state.status = "Jumped to bottom of session detail.";
+        state.status =
+            "Jumped to bottom of " + modal_subject(state) + " modal.";
         return true;
       }
       state.modal_g_pending = false;
@@ -1700,26 +1785,29 @@ bool handle_key(uint32_t key, AppState &state, int visible_rows,
     case 'j':
     case NCKEY_DOWN:
       state.modal_scroll_offset += 1;
-      state.status = "Scrolled session detail.";
+      state.status = "Scrolled " + modal_subject(state) + " modal.";
       return true;
     case 'k':
     case NCKEY_UP:
       state.modal_scroll_offset = std::max(0, state.modal_scroll_offset - 1);
-      state.status = "Scrolled session detail.";
+      state.status = "Scrolled " + modal_subject(state) + " modal.";
       return true;
     case 'd':
     case NCKEY_PGDOWN:
       state.modal_scroll_offset += modal_rows;
-      state.status = "Scrolled session detail.";
+      state.status = "Scrolled " + modal_subject(state) + " modal.";
       return true;
     case 'u':
     case NCKEY_PGUP:
       state.modal_scroll_offset =
           std::max(0, state.modal_scroll_offset - modal_rows);
-      state.status = "Scrolled session detail.";
+      state.status = "Scrolled " + modal_subject(state) + " modal.";
       return true;
     case 'c':
-      return !queue_resume_selected_session(state);
+      if (state.modal_kind == ModalKind::SessionDetail) {
+        return !queue_resume_selected_session(state);
+      }
+      return true;
     case NCKEY_ENTER:
     case '\n':
     case '\r':
@@ -1727,7 +1815,7 @@ bool handle_key(uint32_t key, AppState &state, int visible_rows,
     case 'q':
       state.modal_open = false;
       state.modal_g_pending = false;
-      state.status = "Closed session detail modal.";
+      state.status = "Closed " + modal_subject(state) + " modal.";
       return true;
     default:
       return true;
@@ -1810,6 +1898,7 @@ bool handle_key(uint32_t key, AppState &state, int visible_rows,
     }
     if (load_session_detail(state, state.sessions[state.selected_index])) {
       state.modal_open = true;
+      state.modal_kind = ModalKind::SessionDetail;
       state.status = "Opened detail modal for " +
                      shorten_id(state.sessions[state.selected_index].id);
     }

@@ -79,17 +79,18 @@ You can switch to a different session store at runtime from command mode with
 
 ### Command mode
 
+- `:help` — open the in-app help modal
 - `:theme dark` — switch to the dark color theme
 - `:theme light` — switch to the light color theme
 - `:open <db path>` — open a different Copilot session-store SQLite database
 
-### Detail modal
+### Modals
 
 - `j`, `k` — scroll
 - `u`, `d` — page up/down
 - `gg` — jump to top
 - `ge` — jump to bottom
-- `c` — continue or resume the selected session in GitHub Copilot CLI
+- `c` — continue or resume the selected session in GitHub Copilot CLI from the session detail modal
 - `Enter`, `Esc`, `q` — close
 
 ## Notes
