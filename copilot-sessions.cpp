@@ -12,10 +12,12 @@
 
 #include <algorithm>
 #include <cerrno>
+#include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <sstream>
 #include <string>
 #include <unistd.h>
 #include <vector>
@@ -99,6 +101,11 @@ enum class FocusPane {
   Sessions,
 };
 
+enum class ThemeMode {
+  Dark,
+  Light,
+};
+
 struct AppState {
   std::vector<SessionEntry> all_sessions;
   std::vector<SessionEntry> sessions;
@@ -118,6 +125,9 @@ struct AppState {
   bool clipboard_modal_open = false;
   bool show_selected_cwd_path = false;
   FocusPane focus = FocusPane::Sessions;
+  ThemeMode theme_mode = ThemeMode::Dark;
+  bool command_mode = false;
+  std::string command_buffer = ":";
   bool resume_requested = false;
   std::string resume_session_id;
   std::string resume_session_cwd;
@@ -203,6 +213,110 @@ std::string shorten_id(const std::string &id) {
     return id;
   }
   return id.substr(0, 8);
+}
+
+std::string trim_copy(const std::string &value) {
+  std::size_t first = 0;
+  while (first < value.size() &&
+         std::isspace(static_cast<unsigned char>(value[first])) != 0) {
+    ++first;
+  }
+
+  std::size_t last = value.size();
+  while (last > first &&
+         std::isspace(static_cast<unsigned char>(value[last - 1])) != 0) {
+    --last;
+  }
+
+  return value.substr(first, last - first);
+}
+
+std::string ascii_lower_copy(std::string value) {
+  std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
+    return static_cast<char>(std::tolower(ch));
+  });
+  return value;
+}
+
+std::string expand_user_path(const std::string &path) {
+  if (path.empty() || path.front() != '~') {
+    return path;
+  }
+
+  const char *home = std::getenv("HOME");
+  if (home == nullptr || *home == '\0') {
+    return path;
+  }
+
+  if (path.size() == 1) {
+    return home;
+  }
+  if (path[1] == '/') {
+    return std::string(home) + path.substr(1);
+  }
+  return path;
+}
+
+std::string normalize_path(const std::string &path) {
+  const std::string expanded = expand_user_path(trim_copy(path));
+  if (expanded.empty()) {
+    return expanded;
+  }
+
+  fs::path normalized(expanded);
+  if (normalized.is_relative()) {
+    std::error_code error;
+    normalized = fs::absolute(normalized, error);
+    if (error) {
+      return expanded;
+    }
+  }
+
+  return normalized.lexically_normal().string();
+}
+
+std::string configured_db_path(const AppState &state) {
+  return state.db_path.empty() ? "(not loaded)" : state.db_path;
+}
+
+std::string default_db_path() {
+  const char *copilot_home = std::getenv("COPILOT_HOME");
+  if (copilot_home != nullptr && *copilot_home != '\0') {
+    return normalize_path(std::string(copilot_home) + "/session-store.db");
+  }
+
+  const char *home = std::getenv("HOME");
+  if (home != nullptr && *home != '\0') {
+    return normalize_path(std::string(home) + "/.copilot/session-store.db");
+  }
+
+  return "";
+}
+
+Theme dark_theme() { return Theme{}; }
+
+Theme light_theme() {
+  Theme theme;
+  theme.chrome_fg = {36, 41, 46};
+  theme.base_bg = {244, 247, 252};
+  theme.panel_bg = {229, 234, 242};
+  theme.panel_alt_bg = {220, 226, 236};
+  theme.accent = {33, 94, 196};
+  theme.accent_2 = {0, 121, 107};
+  theme.good = {46, 125, 50};
+  theme.warm = {230, 126, 34};
+  theme.user = {21, 101, 192};
+  theme.dim = {102, 112, 133};
+  theme.alert = {198, 40, 40};
+  return theme;
+}
+
+const char *theme_mode_label(ThemeMode mode) {
+  return mode == ThemeMode::Dark ? "dark" : "light";
+}
+
+Theme current_theme(const AppState &state) {
+  return state.theme_mode == ThemeMode::Dark ? dark_theme() : light_theme();
 }
 
 const SessionEntry *current_session(const AppState &state) {
@@ -387,6 +501,121 @@ void focus_pane(AppState &state, FocusPane pane) {
   }
 
   state.status = "Focused session list.";
+}
+
+void open_command_mode(AppState &state) {
+  state.command_mode = true;
+  state.command_buffer = ":";
+  state.status =
+      "Command mode. Try :theme dark, :theme light, or :open <db path>.";
+}
+
+void close_command_mode(AppState &state, const std::string &status) {
+  state.command_mode = false;
+  state.command_buffer = ":";
+  state.status = status;
+}
+
+bool load_sessions(AppState &state);
+
+void execute_command(AppState &state, const std::string &command) {
+  std::string text = trim_copy(command);
+  if (!text.empty() && text.front() == ':') {
+    text.erase(text.begin());
+  }
+  text = trim_copy(text);
+  if (text.empty()) {
+    state.status = "Command canceled.";
+    return;
+  }
+
+  std::istringstream stream(text);
+  std::string name;
+  stream >> name;
+  name = ascii_lower_copy(name);
+  std::string arg;
+  std::getline(stream, arg);
+  arg = trim_copy(arg);
+
+  if (name == "theme") {
+    const std::string theme_name = ascii_lower_copy(arg);
+    if (theme_name == "dark") {
+      if (state.theme_mode == ThemeMode::Dark) {
+        state.status = "Theme already set to dark.";
+      } else {
+        state.theme_mode = ThemeMode::Dark;
+        state.status = "Switched to dark theme.";
+      }
+      return;
+    }
+    if (theme_name == "light") {
+      if (state.theme_mode == ThemeMode::Light) {
+        state.status = "Theme already set to light.";
+      } else {
+        state.theme_mode = ThemeMode::Light;
+        state.status = "Switched to light theme.";
+      }
+      return;
+    }
+    state.status = "Unknown theme. Use :theme dark or :theme light.";
+    return;
+  }
+
+  if (name == "open") {
+    if (arg.empty()) {
+      state.status = "Missing database path. Use :open <db path>.";
+      return;
+    }
+
+    AppState next_state = state;
+    next_state.db_path = normalize_path(arg);
+    if (!load_sessions(next_state)) {
+      state.status = next_state.status;
+      return;
+    }
+
+    state = std::move(next_state);
+    state.status = "Opened " + state.db_path + " (" +
+                   std::to_string(state.all_sessions.size()) + " sessions).";
+    return;
+  }
+
+  state.status =
+      "Unknown command. Use :theme dark, :theme light, or :open <db path>.";
+}
+
+bool handle_command_key(uint32_t key, AppState &state) {
+  switch (key) {
+  case NCKEY_ENTER:
+  case '\n':
+  case '\r': {
+    const std::string command = state.command_buffer;
+    state.command_mode = false;
+    state.command_buffer = ":";
+    execute_command(state, command);
+    return true;
+  }
+  case 27:
+    close_command_mode(state, "Command canceled.");
+    return true;
+  case NCKEY_BACKSPACE:
+  case 127:
+  case '\b':
+    if (state.command_buffer.size() <= 1) {
+      close_command_mode(state, "Command canceled.");
+    } else {
+      state.command_buffer.pop_back();
+      state.status = "Editing command.";
+    }
+    return true;
+  default:
+    if (key <= 0xff &&
+        std::isprint(static_cast<unsigned char>(key)) != 0) {
+      state.command_buffer.push_back(static_cast<char>(key));
+      state.status = "Editing command.";
+    }
+    return true;
+  }
 }
 
 int resume_in_copilot(const AppState &state) {
@@ -719,8 +948,26 @@ void rebuild_cwd_filters(AppState &state, const std::string &preferred_value) {
 
 bool load_sessions(AppState &state) {
   const std::string preferred_filter = current_filter_value(state);
-  const char *home = std::getenv("HOME");
-  if (home == nullptr || *home == '\0') {
+  if (state.db_path.empty()) {
+    state.db_path = default_db_path();
+    if (state.db_path.empty()) {
+      state.all_sessions.clear();
+      state.sessions.clear();
+      state.cwd_filters.clear();
+      state.selected_index = 0;
+      state.scroll_offset = 0;
+      state.selected_cwd_index = 0;
+      state.cwd_scroll_offset = 0;
+      state.status =
+          "COPILOT_HOME and HOME are not set; cannot locate session-store.db";
+      state.db_path.clear();
+      return false;
+    }
+  } else {
+    state.db_path = normalize_path(state.db_path);
+  }
+
+  if (state.db_path.empty()) {
     state.all_sessions.clear();
     state.sessions.clear();
     state.cwd_filters.clear();
@@ -728,12 +975,9 @@ bool load_sessions(AppState &state) {
     state.scroll_offset = 0;
     state.selected_cwd_index = 0;
     state.cwd_scroll_offset = 0;
-    state.status = "HOME is not set; cannot locate ~/.copilot/session-store.db";
-    state.db_path.clear();
+    state.status = "Database path is empty.";
     return false;
   }
-
-  state.db_path = std::string(home) + "/.copilot/session-store.db";
   std::error_code db_error;
   const auto db_size = fs::file_size(state.db_path, db_error);
   state.db_size_label =
@@ -750,7 +994,8 @@ bool load_sessions(AppState &state) {
     state.selected_cwd_index = 0;
     state.cwd_scroll_offset = 0;
     const char *message = db != nullptr ? sqlite3_errmsg(db) : "open failed";
-    state.status = "Failed to open session-store.db: " + std::string(message);
+    state.status = "Failed to open " + state.db_path + ": " +
+                   std::string(message);
     if (db != nullptr) {
       sqlite3_close(db);
     }
@@ -813,12 +1058,12 @@ bool load_sessions(AppState &state) {
   if (state.all_sessions.empty()) {
     state.selected_index = 0;
     state.scroll_offset = 0;
-    state.status = "No stored sessions found in ~/.copilot/session-store.db";
+    state.status = "No stored sessions found in " + state.db_path;
     return true;
   }
 
   state.status = "Loaded " + std::to_string(state.all_sessions.size()) +
-                 " Copilot sessions from session-store.db";
+                 " Copilot sessions from " + state.db_path;
   return true;
 }
 
@@ -836,7 +1081,8 @@ bool load_session_detail(AppState &state, const SessionEntry &entry) {
   const int open_rc = sqlite3_open_v2(state.db_path.c_str(), &db,
                                       SQLITE_OPEN_READONLY, nullptr);
   if (open_rc != SQLITE_OK) {
-    state.status = "Failed to open session-store.db for detail view.";
+    state.status = "Failed to open " + configured_db_path(state) +
+                   " for detail view.";
     if (db != nullptr) {
       sqlite3_close(db);
     }
@@ -1196,7 +1442,7 @@ void draw_clipboard_modal(const AppState &state, ncplane *plane,
 }
 
 void render(const AppState &state, ncplane *plane) {
-  const Theme theme;
+  const Theme theme = current_theme(state);
   unsigned rows_u = 0;
   unsigned cols_u = 0;
   ncplane_dim_yx(plane, &rows_u, &cols_u);
@@ -1241,15 +1487,17 @@ void render(const AppState &state, ncplane *plane) {
            theme.panel_bg, theme.good);
 
   set_colors(plane, theme.chrome_fg, theme.panel_bg, NCSTYLE_BOLD);
-  ncplane_putstr_yx(plane, 1, 2,
-                    "Session browser for ~/.copilot/session-store.db");
+  ncplane_printf_yx(plane, 1, 2, "%.*s", std::max(0, cols - 23),
+                    ellipsize("Session browser for " + configured_db_path(state),
+                              std::max(0, cols - 23))
+                        .c_str());
   set_colors(plane, theme.accent_2, theme.panel_bg, NCSTYLE_BOLD);
   ncplane_putstr_yx(plane, 1, cols - 19, "[ SQLITE LIVE ]");
   set_colors(plane, theme.dim, theme.panel_bg);
   ncplane_putstr_yx(
       plane, 2, 2,
-      "Use Tab or h/l to change pane, j/k browse, y yank ID, c continue, "
-      "Space full path, Enter modal, r reload");
+      "Use Tab or h/l to change pane, j/k browse, : command, y yank ID, "
+      "c continue, Enter modal");
   reset_colors(plane);
 
   set_colors(plane, theme.chrome_fg, theme.panel_alt_bg, NCSTYLE_BOLD);
@@ -1331,23 +1579,30 @@ void render(const AppState &state, ncplane *plane) {
                                       ? "CWD filters"
                                       : "session list") +
                       " | Database: " +
-                      (state.db_path.empty()
-                           ? std::string("~/.copilot/session-store.db")
-                           : state.db_path) +
+                      configured_db_path(state) +
                       " (" + state.db_size_label + ")" +
-                      " | Hotkeys: Tab/h/l switch pane, j/k browse, y yank ID, "
-                      "c continue, "
+                      " | Theme: " + theme_mode_label(state.theme_mode) +
+                      " | Hotkeys: Tab/h/l switch pane, j/k browse, : command, "
+                      "y yank ID, c continue, "
                       "Space full path, Enter modal, r reload, q quit",
                   cols - 4)
             .c_str());
     reset_colors(plane);
   }
 
-  set_colors(plane, theme.good, theme.panel_bg, NCSTYLE_BOLD);
-  ncplane_putstr_yx(plane, footer_y + 1, 2, "SYNC");
-  set_colors(plane, theme.chrome_fg, theme.panel_bg);
-  ncplane_printf_yx(plane, footer_y + 1, 8, "%.*s", cols - 10,
-                    state.status.c_str());
+  if (state.command_mode) {
+    set_colors(plane, theme.accent_2, theme.panel_bg, NCSTYLE_BOLD);
+    ncplane_putstr_yx(plane, footer_y + 1, 2, "CMD");
+    set_colors(plane, theme.chrome_fg, theme.panel_bg);
+    ncplane_printf_yx(plane, footer_y + 1, 7, "%.*s", cols - 9,
+                      state.command_buffer.c_str());
+  } else {
+    set_colors(plane, theme.good, theme.panel_bg, NCSTYLE_BOLD);
+    ncplane_putstr_yx(plane, footer_y + 1, 2, "SYNC");
+    set_colors(plane, theme.chrome_fg, theme.panel_bg);
+    ncplane_printf_yx(plane, footer_y + 1, 8, "%.*s", cols - 10,
+                      state.status.c_str());
+  }
   reset_colors(plane);
 
   if (state.modal_open) {
@@ -1479,9 +1734,16 @@ bool handle_key(uint32_t key, AppState &state, int visible_rows,
     }
   }
 
+  if (state.command_mode) {
+    return handle_command_key(key, state);
+  }
+
   switch (key) {
   case 'q':
     return false;
+  case ':':
+    open_command_mode(state);
+    return true;
   case '\t':
     focus_pane(state, state.focus == FocusPane::Cwds ? FocusPane::Sessions
                                                      : FocusPane::Cwds);

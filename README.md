@@ -1,6 +1,6 @@
 # copilot-sessions
 
-`copilot-sessions` is a small terminal UI for browsing and resuming GitHub Copilot CLI sessions stored in `~/.copilot/session-store.db`.
+`copilot-sessions` is a small terminal UI for browsing and resuming GitHub Copilot CLI sessions stored in a Copilot session-store SQLite database.
 
 It presents sessions in a compact split-pane layout with:
 
@@ -53,17 +53,22 @@ For a debug build:
 make BUILD=debug
 ```
 
-The app expects the Copilot session database at:
+The app starts with the Copilot session database resolved in this order:
 
 ```text
-~/.copilot/session-store.db
+${COPILOT_HOME}/session-store.db
+$HOME/.copilot/session-store.db
 ```
+
+You can switch to a different session store at runtime from command mode with
+`:open <db path>`.
 
 ## Controls
 
 - `Tab`, `h`, `l` — switch focus between folders and sessions; entering folders enables full path mode
 - `j`, `k` — move selection
 - `u`, `d` — page up/down in the main browser
+- `:` — open command mode
 - `y` — yank the selected session ID to the clipboard
 - `c` — continue or resume the selected session in GitHub Copilot CLI
 - `PageUp`, `PageDown` — jump by page
@@ -71,6 +76,12 @@ The app expects the Copilot session database at:
 - `Enter` — open session detail modal
 - `r` — reload from the database
 - `q` — quit
+
+### Command mode
+
+- `:theme dark` — switch to the dark color theme
+- `:theme light` — switch to the light color theme
+- `:open <db path>` — open a different Copilot session-store SQLite database
 
 ### Detail modal
 
@@ -87,4 +98,6 @@ The app expects the Copilot session database at:
 - Resuming a session whose original folder no longer exists shows a warning modal before launching Copilot.
 - Yanking a session ID shows a confirmation modal with the full copied ID.
 - Long folder names are truncated in the sidebar and can be expanded with the path preview toggle; entering the folder pane always enables that mode.
+- The app starts in the dark theme and can switch between dark and light themes from command mode.
+- `:open` accepts absolute paths, relative paths, and `~/...` paths.
 - The UI is designed for a reasonably sized terminal and asks for at least `72x18`.
