@@ -50,6 +50,7 @@ struct SessionEntry {
   std::string id;
   std::string summary;
   std::string created_at;
+  std::string updated_at;
   std::string cwd;
   std::string repository;
 };
@@ -106,6 +107,13 @@ enum class ThemeMode {
   Light,
 };
 
+enum class SessionSort {
+  UpdatedDesc,
+  UpdatedAsc,
+  CreatedDesc,
+  CreatedAsc,
+};
+
 enum class ModalKind {
   SessionDetail,
   Help,
@@ -127,11 +135,16 @@ struct AppState {
   ModalKind modal_kind = ModalKind::SessionDetail;
   int modal_scroll_offset = 0;
   bool modal_g_pending = false;
+  bool browser_g_pending = false;
   bool resume_warning_open = false;
   bool clipboard_modal_open = false;
   bool show_selected_cwd_path = false;
   FocusPane focus = FocusPane::Sessions;
   ThemeMode theme_mode = ThemeMode::Dark;
+  SessionSort sort_mode = SessionSort::UpdatedDesc;
+  bool sort_s_pending = false;
+  bool sort_direction_pending = false;
+  SessionSort pending_sort_mode = SessionSort::UpdatedDesc;
   bool command_mode = false;
   std::string command_buffer = ":";
   bool resume_requested = false;
@@ -207,11 +220,41 @@ void draw_box(ncplane *plane, int y, int x, int height, int width,
   reset_colors(plane);
 }
 
-std::string trim_time(const std::string &value) {
-  if (value.size() >= 10) {
-    return value.substr(0, 10);
+std::string ellipsize(const std::string &text, int width);
+
+std::string normalize_timestamp_display(std::string value) {
+  std::replace(value.begin(), value.end(), 'T', ' ');
+  if (!value.empty() && value.back() == 'Z') {
+    value.pop_back();
   }
   return value;
+}
+
+std::string format_list_timestamp(const std::string &value, int width) {
+  if (width <= 0) {
+    return "";
+  }
+
+  const std::string normalized = normalize_timestamp_display(value);
+  if (normalized.empty()) {
+    return "-";
+  }
+  if (width >= 16 && static_cast<int>(normalized.size()) >= 16) {
+    return normalized.substr(0, 16);
+  }
+  if (width >= 10 && static_cast<int>(normalized.size()) >= 10) {
+    return normalized.substr(0, 10);
+  }
+  if (width >= 8 && static_cast<int>(normalized.size()) >= 13) {
+    return normalized.substr(5, 8);
+  }
+  if (width >= 5 && static_cast<int>(normalized.size()) >= 10) {
+    return normalized.substr(5, 5);
+  }
+  if (width >= 4 && static_cast<int>(normalized.size()) >= 10) {
+    return normalized.substr(5, 2) + normalized.substr(8, 2);
+  }
+  return ellipsize(normalized, width);
 }
 
 std::string shorten_id(const std::string &id) {
@@ -319,6 +362,34 @@ Theme light_theme() {
 
 const char *theme_mode_label(ThemeMode mode) {
   return mode == ThemeMode::Dark ? "dark" : "light";
+}
+
+const char *session_sort_label(SessionSort mode) {
+  switch (mode) {
+  case SessionSort::UpdatedDesc:
+    return "last update desc";
+  case SessionSort::UpdatedAsc:
+    return "last update asc";
+  case SessionSort::CreatedDesc:
+    return "creation time desc";
+  case SessionSort::CreatedAsc:
+    return "creation time asc";
+  }
+  return "last update desc";
+}
+
+const char *session_sort_key_label(SessionSort mode) {
+  switch (mode) {
+  case SessionSort::UpdatedDesc:
+    return "sud";
+  case SessionSort::UpdatedAsc:
+    return "sua";
+  case SessionSort::CreatedDesc:
+    return "scd";
+  case SessionSort::CreatedAsc:
+    return "sca";
+  }
+  return "sud";
 }
 
 Theme current_theme(const AppState &state) {
@@ -677,6 +748,37 @@ std::string ellipsize(const std::string &text, int width) {
   return text.substr(0, width - 3) + "...";
 }
 
+std::string sort_primary_timestamp(const SessionEntry &session,
+                                   SessionSort mode) {
+  if (mode == SessionSort::UpdatedDesc || mode == SessionSort::UpdatedAsc) {
+    return session.updated_at.empty() ? session.created_at : session.updated_at;
+  }
+  return session.created_at;
+}
+
+void sort_sessions(std::vector<SessionEntry> &sessions, SessionSort mode) {
+  const bool descending =
+      mode == SessionSort::UpdatedDesc || mode == SessionSort::CreatedDesc;
+  std::sort(sessions.begin(), sessions.end(),
+            [mode, descending](const SessionEntry &lhs, const SessionEntry &rhs) {
+              const std::string lhs_primary = sort_primary_timestamp(lhs, mode);
+              const std::string rhs_primary = sort_primary_timestamp(rhs, mode);
+              if (lhs_primary != rhs_primary) {
+                return descending ? lhs_primary > rhs_primary
+                                  : lhs_primary < rhs_primary;
+              }
+              if (lhs.updated_at != rhs.updated_at) {
+                return descending ? lhs.updated_at > rhs.updated_at
+                                  : lhs.updated_at < rhs.updated_at;
+              }
+              if (lhs.created_at != rhs.created_at) {
+                return descending ? lhs.created_at > rhs.created_at
+                                  : lhs.created_at < rhs.created_at;
+              }
+              return lhs.id < rhs.id;
+            });
+}
+
 std::string format_bytes(long long bytes) {
   if (bytes < 0) {
     return "(unknown)";
@@ -775,7 +877,7 @@ std::vector<std::string> build_modal_lines(const SessionDetail &detail,
   append_wrapped_block(lines, "SUMMARY   ",
                        detail.summary.empty() ? "(no summary)" : detail.summary,
                        content_width);
-  append_wrapped_block(lines, "WHEN      ", detail.created_at, content_width);
+  append_wrapped_block(lines, "CREATED   ", detail.created_at, content_width);
   append_wrapped_block(lines, "UPDATED   ", detail.updated_at, content_width);
   append_wrapped_block(lines, "FOLDER    ",
                        detail.cwd.empty() ? "(none)" : detail.cwd,
@@ -865,6 +967,10 @@ std::vector<std::string> build_help_modal_lines(const AppState &state, int width
   lines.push_back("  Tab, h, l  switch focus between folders and sessions");
   lines.push_back("  j, k       move selection");
   lines.push_back("  u, d       page up/down");
+  lines.push_back("  gg, ge     jump to top or bottom");
+  lines.push_back("  su, sc     sort by last update or creation time (desc)");
+  lines.push_back("  sua, sca   sort ascending");
+  lines.push_back("  sud, scd   sort descending");
   lines.push_back("  :          open command mode");
   lines.push_back("  y          yank selected session ID");
   lines.push_back("  c          continue selected session");
@@ -971,6 +1077,8 @@ void ensure_filter_visible(AppState &state, int visible_rows) {
 }
 
 void apply_current_filter(AppState &state) {
+  const SessionEntry *selected = current_session(state);
+  const std::string selected_id = selected == nullptr ? "" : selected->id;
   const std::string filter_value = current_filter_value(state);
   const bool show_all = state.cwd_filters.empty() ||
                         state.cwd_filters[state.selected_cwd_index].is_all;
@@ -983,6 +1091,12 @@ void apply_current_filter(AppState &state) {
   }
 
   state.selected_index = 0;
+  for (int i = 0; i < static_cast<int>(state.sessions.size()); ++i) {
+    if (state.sessions[i].id == selected_id) {
+      state.selected_index = i;
+      break;
+    }
+  }
   state.scroll_offset = 0;
   state.detail = {};
   state.modal_open = false;
@@ -1086,9 +1200,9 @@ bool load_sessions(AppState &state) {
 
   const char *query =
       "SELECT id, COALESCE(summary, ''), COALESCE(created_at, ''), "
-      "COALESCE(cwd, ''), COALESCE(repository, '') "
-      "FROM sessions "
-      "ORDER BY created_at DESC;";
+      "COALESCE(updated_at, ''), COALESCE(cwd, ''), "
+      "COALESCE(repository, '') "
+      "FROM sessions;";
 
   sqlite3_stmt *stmt = nullptr;
   const int prepare_rc = sqlite3_prepare_v2(db, query, -1, &stmt, nullptr);
@@ -1112,8 +1226,9 @@ bool load_sessions(AppState &state) {
     session.id = column_text(stmt, 0);
     session.summary = column_text(stmt, 1);
     session.created_at = column_text(stmt, 2);
-    session.cwd = column_text(stmt, 3);
-    session.repository = column_text(stmt, 4);
+    session.updated_at = column_text(stmt, 3);
+    session.cwd = column_text(stmt, 4);
+    session.repository = column_text(stmt, 5);
     sessions.push_back(std::move(session));
   }
 
@@ -1133,6 +1248,7 @@ bool load_sessions(AppState &state) {
   }
 
   sqlite3_close(db);
+  sort_sessions(sessions, state.sort_mode);
   state.all_sessions = std::move(sessions);
   rebuild_cwd_filters(state, preferred_filter);
   apply_current_filter(state);
@@ -1316,9 +1432,22 @@ void draw_session_list(ncplane *plane, int y, int x, int height, int width,
     return;
   }
 
-  const int id_width = std::min(10, std::max(8, width / 7));
-  const int date_width = width > 34 ? 10 : 0;
-  const int summary_width = std::max(8, width - id_width - date_width - 6);
+  constexpr int id_width = 8;
+  constexpr int min_summary_width = 8;
+  int timestamp_width = 0;
+  std::string meta_template;
+  const int meta_budget =
+      width - (2 + id_width + 2 + min_summary_width + 1);
+  if (meta_budget >= 4) {
+    timestamp_width = std::max(4, std::min(16, meta_budget));
+    meta_template = std::string(timestamp_width, ' ');
+  }
+  const int summary_width =
+      std::max(min_summary_width,
+               width - (2 + id_width + 2 +
+                        (meta_template.empty()
+                             ? 0
+                             : 1 + static_cast<int>(meta_template.size()))));
 
   for (int row = 0; row < height; ++row) {
     const int index = state.scroll_offset + row;
@@ -1341,13 +1470,14 @@ void draw_session_list(ncplane *plane, int y, int x, int height, int width,
     line += shorten_id(session.id);
     line += "  ";
     line += ellipsize(summary, summary_width);
-    if (date_width > 0 && !session.created_at.empty()) {
-      std::string date = trim_time(session.created_at);
+    if (timestamp_width > 0) {
+      const std::string date_meta = format_list_timestamp(
+          sort_primary_timestamp(session, state.sort_mode), timestamp_width);
       const int used = static_cast<int>(line.size());
-      if (used < width - date_width) {
-        line.append(width - date_width - used, ' ');
+      if (used < width - static_cast<int>(date_meta.size())) {
+        line.append(width - static_cast<int>(date_meta.size()) - used, ' ');
       }
-      line += ellipsize(date, date_width);
+      line += date_meta;
     }
 
     ncplane_printf_yx(plane, y + row, x, "%.*s", width, line.c_str());
@@ -1581,7 +1711,7 @@ void render(const AppState &state, ncplane *plane) {
   ncplane_putstr_yx(
       plane, 2, 2,
       "Use Tab or h/l to change pane, j/k browse, : command, y yank ID, "
-      "c continue, Enter modal");
+      "c continue, su/sc sort, Enter modal");
   reset_colors(plane);
 
   set_colors(plane, theme.chrome_fg, theme.panel_alt_bg, NCSTYLE_BOLD);
@@ -1602,6 +1732,16 @@ void render(const AppState &state, ncplane *plane) {
   ncplane_printf_yx(plane, body_y + 3, list_x + 14, "%2d/%-2zu",
                     state.sessions.empty() ? 0 : state.selected_index + 1,
                     state.sessions.size());
+  set_colors(plane, theme.chrome_fg, theme.panel_bg, NCSTYLE_BOLD);
+  ncplane_printf_yx(plane, body_y + 3, list_x + std::max(18, list_w - 28),
+                    "%.*s", std::max(0, list_w - 20),
+                    ellipsize("Sort: " +
+                                  std::string(session_sort_key_label(state.sort_mode)) +
+                                  " (" +
+                                  std::string(session_sort_label(state.sort_mode)) +
+                                  ")",
+                              std::max(0, list_w - 20))
+                        .c_str());
   reset_colors(plane);
   draw_cwd_list(plane, body_y + 3, 2, cwd_rows, filter_w - 4, state, theme,
                 state.focus == FocusPane::Cwds);
@@ -1642,19 +1782,21 @@ void render(const AppState &state, ncplane *plane) {
         plane, detail_y + 2, 2, "SUMMARY %.*s", cols - 10,
         (selected->summary.empty() ? "(no summary)" : selected->summary)
             .c_str());
-    ncplane_printf_yx(plane, detail_y + 3, 2, "WHEN    %.*s", cols - 10,
+    ncplane_printf_yx(plane, detail_y + 3, 2, "CREATED %.*s", cols - 10,
                       selected->created_at.c_str());
     ncplane_printf_yx(
-        plane, detail_y + 4, 2, "REPO    %.*s", cols - 10,
-        (selected->repository.empty() ? "(none)" : selected->repository)
+        plane, detail_y + 4, 2, "UPDATED %.*s", cols - 10,
+        selected->updated_at.c_str());
+    ncplane_printf_yx(
+        plane, detail_y + 5, 2, "REPO    %.*s", cols - 10,
+        ellipsize((selected->repository.empty() ? "(none)" : selected->repository) +
+                      std::string(" | FILTER ") +
+                      (filter == nullptr ? "ALL" : filter->label),
+                  cols - 10)
             .c_str());
     ncplane_printf_yx(
-        plane, detail_y + 5, 2, "CWD     %.*s", cols - 10,
+        plane, detail_y + 6, 2, "CWD     %.*s", cols - 10,
         (selected->cwd.empty() ? "(none)" : selected->cwd).c_str());
-    ncplane_printf_yx(
-        plane, detail_y + 6, 2, "FILTER  %.*s", cols - 10,
-        ellipsize(filter == nullptr ? "ALL" : filter->label, cols - 10)
-            .c_str());
     set_colors(plane, theme.dim, theme.panel_alt_bg);
     ncplane_printf_yx(
         plane, detail_y + 7, 2, "%.*s", cols - 4,
@@ -1666,8 +1808,8 @@ void render(const AppState &state, ncplane *plane) {
                       configured_db_path(state) +
                       " (" + state.db_size_label + ")" +
                       " | Theme: " + theme_mode_label(state.theme_mode) +
-                      " | Hotkeys: Tab/h/l switch pane, j/k browse, : command, "
-                      "y yank ID, c continue, "
+                      " | Hotkeys: Tab/h/l switch pane, j/k browse, "
+                      "su/sc + a/d sort, : command, y yank ID, c continue, "
                       "Space full path, Enter modal, r reload, q quit",
                   cols - 4)
             .c_str());
@@ -1720,6 +1862,81 @@ void move_filter_selection(AppState &state, int delta, int visible_rows) {
   clamp_filter_selection(state);
   ensure_filter_visible(state, visible_rows);
   apply_current_filter(state);
+}
+
+void jump_browser_to_top(AppState &state) {
+  if (state.focus == FocusPane::Cwds) {
+    if (state.cwd_filters.empty()) {
+      state.status = "No CWD filter available.";
+      return;
+    }
+    state.selected_cwd_index = 0;
+    state.cwd_scroll_offset = 0;
+    apply_current_filter(state);
+    state.status = "Jumped to top of CWD filters.";
+    return;
+  }
+
+  if (state.sessions.empty()) {
+    state.status = "No session available.";
+    return;
+  }
+  state.selected_index = 0;
+  state.scroll_offset = 0;
+  state.status = "Jumped to top of session list.";
+}
+
+void jump_browser_to_bottom(AppState &state, int visible_rows, int filter_rows) {
+  if (state.focus == FocusPane::Cwds) {
+    if (state.cwd_filters.empty()) {
+      state.status = "No CWD filter available.";
+      return;
+    }
+    state.selected_cwd_index = static_cast<int>(state.cwd_filters.size()) - 1;
+    ensure_filter_visible(state, filter_rows);
+    apply_current_filter(state);
+    state.status = "Jumped to bottom of CWD filters.";
+    return;
+  }
+
+  if (state.sessions.empty()) {
+    state.status = "No session available.";
+    return;
+  }
+  state.selected_index = static_cast<int>(state.sessions.size()) - 1;
+  ensure_visible(state, visible_rows);
+  state.status = "Jumped to bottom of session list.";
+}
+
+void set_sort_mode(AppState &state, SessionSort mode, int visible_rows) {
+  state.browser_g_pending = false;
+  state.sort_s_pending = false;
+  state.sort_direction_pending = false;
+  if (state.sort_mode == mode) {
+    state.status =
+        "Already sorting sessions by " + std::string(session_sort_label(mode)) +
+        ".";
+    return;
+  }
+
+  state.sort_mode = mode;
+  sort_sessions(state.all_sessions, state.sort_mode);
+  apply_current_filter(state);
+  ensure_visible(state, visible_rows);
+  state.status = "Sorting sessions by " +
+                 std::string(session_sort_label(state.sort_mode)) + ".";
+}
+
+SessionSort session_sort_with_direction(SessionSort mode, bool descending) {
+  switch (mode) {
+  case SessionSort::UpdatedDesc:
+  case SessionSort::UpdatedAsc:
+    return descending ? SessionSort::UpdatedDesc : SessionSort::UpdatedAsc;
+  case SessionSort::CreatedDesc:
+  case SessionSort::CreatedAsc:
+    return descending ? SessionSort::CreatedDesc : SessionSort::CreatedAsc;
+  }
+  return descending ? SessionSort::UpdatedDesc : SessionSort::UpdatedAsc;
 }
 
 bool handle_key(uint32_t key, AppState &state, int visible_rows,
@@ -1826,9 +2043,69 @@ bool handle_key(uint32_t key, AppState &state, int visible_rows,
     return handle_command_key(key, state);
   }
 
+  if (state.browser_g_pending) {
+    state.browser_g_pending = false;
+    if (key == 'g') {
+      jump_browser_to_top(state);
+      return true;
+    }
+    if (key == 'e') {
+      jump_browser_to_bottom(state, visible_rows, filter_rows);
+      return true;
+    }
+  }
+
+  if (state.sort_direction_pending) {
+    state.sort_direction_pending = false;
+    if (key == 'a') {
+      set_sort_mode(state,
+                    session_sort_with_direction(state.pending_sort_mode, false),
+                    visible_rows);
+      return true;
+    }
+    if (key == 'd') {
+      set_sort_mode(state,
+                    session_sort_with_direction(state.pending_sort_mode, true),
+                    visible_rows);
+      return true;
+    }
+  }
+
+  if (state.sort_s_pending) {
+    state.sort_s_pending = false;
+    if (key == 'u') {
+      state.pending_sort_mode = SessionSort::UpdatedDesc;
+      set_sort_mode(state, SessionSort::UpdatedDesc, visible_rows);
+      state.sort_direction_pending = true;
+      state.status += " Press a or d to refine direction.";
+      return true;
+    }
+    if (key == 'c') {
+      state.pending_sort_mode = SessionSort::CreatedDesc;
+      set_sort_mode(state, SessionSort::CreatedDesc, visible_rows);
+      state.sort_direction_pending = true;
+      state.status += " Press a or d to refine direction.";
+      return true;
+    }
+    state.status = "Sort chord canceled.";
+    return true;
+  }
+
   switch (key) {
   case 'q':
     return false;
+  case 'g':
+    state.browser_g_pending = true;
+    state.sort_s_pending = false;
+    state.sort_direction_pending = false;
+    state.status = "Browser chord started: g";
+    return true;
+  case 's':
+    state.browser_g_pending = false;
+    state.sort_s_pending = true;
+    state.sort_direction_pending = false;
+    state.status = "Sort chord started: use su or sc, then optional a/d.";
+    return true;
   case ':':
     open_command_mode(state);
     return true;

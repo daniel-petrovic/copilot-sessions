@@ -70,6 +70,9 @@ You can switch to a different session store at runtime from command mode with
 - `Tab`, `h`, `l` — switch focus between folders and sessions; entering folders enables full path mode
 - `j`, `k` — move selection
 - `u`, `d` — page up/down in the main browser
+- `gg`, `ge` — jump to top or bottom in the focused browser pane
+- `su`, `sc` — sort stored sessions by last update time or creation time (default descending)
+- `sua`, `sud`, `sca`, `scd` — sort ascending or descending explicitly
 - `:` — open command mode
 - `y` — yank the selected session ID to the clipboard
 - `c` — continue or resume the selected session in GitHub Copilot CLI
@@ -103,4 +106,5 @@ You can switch to a different session store at runtime from command mode with
 - Long folder names are truncated in the sidebar and can be expanded with the path preview toggle; entering the folder pane always enables that mode.
 - The app starts in the dark theme and can switch between dark and light themes from command mode.
 - `:open` accepts absolute paths, relative paths, and `~/...` paths.
+- Stored sessions are sorted by last update time by default; the list shows both update and creation timestamps.
 - The UI is designed for a reasonably sized terminal and asks for at least `72x18`.
