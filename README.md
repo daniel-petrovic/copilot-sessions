@@ -2,6 +2,8 @@
 
 `copilot-sessions` is a small terminal UI for browsing and resuming GitHub Copilot CLI sessions stored in a Copilot session-store SQLite database.
 
+Current project version is defined by `VERSION` in the `Makefile` and is shown in the TUI header/help view.
+
 ![copilot-sessions screenshot](./copilot-sessions.png)
 
 It presents sessions in a compact split-pane layout with:

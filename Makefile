@@ -1,4 +1,5 @@
 PROJECT := copilot-sessions
+VERSION ?= 0.1.0
 BUILD_DIR ?= build
 PREFIX ?= /usr/local
 BINDIR ?= $(PREFIX)/bin
@@ -30,6 +31,7 @@ $(error Unsupported BUILD '$(BUILD)'; use BUILD=debug or BUILD=release)
 endif
 
 CPPFLAGS += $(shell $(PKG_CONFIG) --cflags $(PKGS))
+CPPFLAGS += -DPROJECT_VERSION=\"$(VERSION)\"
 CXXFLAGS += $(STD) $(WARNFLAGS) $(OPTFLAGS)
 LDLIBS += $(shell $(PKG_CONFIG) --libs $(PKGS))
 

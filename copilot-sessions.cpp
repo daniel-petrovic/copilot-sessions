@@ -26,6 +26,10 @@ namespace {
 
 namespace fs = std::filesystem;
 
+#ifndef PROJECT_VERSION
+#define PROJECT_VERSION "dev"
+#endif
+
 struct Rgb {
   unsigned r;
   unsigned g;
@@ -327,6 +331,8 @@ std::string normalize_path(const std::string &path) {
 std::string configured_db_path(const AppState &state) {
   return state.db_path.empty() ? "(not loaded)" : state.db_path;
 }
+
+std::string project_version() { return PROJECT_VERSION; }
 
 std::string default_db_path() {
   const char *copilot_home = std::getenv("COPILOT_HOME");
@@ -959,6 +965,7 @@ std::vector<std::string> build_help_modal_lines(const AppState &state, int width
   std::vector<std::string> lines;
   const int content_width = std::max(12, width);
 
+  append_wrapped_block(lines, "Version   ", project_version(), content_width);
   append_wrapped_block(lines, "Database  ", configured_db_path(state),
                        content_width);
   append_wrapped_block(lines, "Theme     ", theme_mode_label(state.theme_mode),
@@ -1707,7 +1714,9 @@ void render(const AppState &state, ncplane *plane) {
 
   set_colors(plane, theme.chrome_fg, theme.panel_bg, NCSTYLE_BOLD);
   ncplane_printf_yx(plane, 1, 2, "%.*s", std::max(0, cols - 23),
-                    ellipsize("Session browser for " + configured_db_path(state),
+                    ellipsize("copilot-sessions v" + project_version() +
+                                  " | Session browser for " +
+                                  configured_db_path(state),
                               std::max(0, cols - 23))
                         .c_str());
   set_colors(plane, theme.accent_2, theme.panel_bg, NCSTYLE_BOLD);
