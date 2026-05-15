@@ -101,7 +101,8 @@ You can switch to a different session store at runtime from command mode with
 ## Notes
 
 - Missing folders in the CWD list are marked with `!` and highlighted.
-- Resuming a session whose original folder no longer exists shows a warning modal before launching Copilot.
+- Resuming a session starts Copilot from that session's stored CWD.
+- Resuming a session whose original folder no longer exists shows a warning modal and blocks resume until the folder exists again.
 - Yanking a session ID shows a confirmation modal with the full copied ID.
 - Long folder names are truncated in the sidebar and can be expanded with the path preview toggle; entering the folder pane always enables that mode.
 - The app starts in the dark theme and can switch between dark and light themes from command mode.

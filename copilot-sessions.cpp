@@ -715,8 +715,10 @@ int resume_in_copilot(const AppState &state) {
 
   if (!state.resume_session_cwd.empty() &&
       chdir(state.resume_session_cwd.c_str()) != 0) {
-    std::fprintf(stderr, "warning: failed to change directory to %s: %s\n",
+    std::fprintf(stderr,
+                 "failed to change directory to stored session cwd %s: %s\n",
                  state.resume_session_cwd.c_str(), std::strerror(errno));
+    return 1;
   }
 
   std::vector<std::string> args{
@@ -1000,6 +1002,8 @@ std::vector<std::string> build_help_modal_lines(const AppState &state, int width
   lines.push_back("    1. $COPILOT_HOME/session-store.db");
   lines.push_back("    2. $HOME/.copilot/session-store.db");
   lines.push_back("  :open accepts absolute, relative, and ~/ paths.");
+  lines.push_back("  Resume starts Copilot from the stored session cwd.");
+  lines.push_back("  Resume is blocked if that folder no longer exists.");
 
   return lines;
 }
@@ -1620,8 +1624,9 @@ void draw_resume_warning_modal(const AppState &state, ncplane *plane,
                       modal_w - 4, cwd_lines[row].c_str());
   }
 
-  ncplane_printf_yx(plane, modal_y + 8, modal_x + 2, "%.*s", modal_w - 4,
-                    "Press Enter to continue anyway, or Esc/q to cancel.");
+  ncplane_printf_yx(
+      plane, modal_y + 8, modal_x + 2, "%.*s", modal_w - 4,
+      "Resume is blocked until that folder exists again. Press Enter/Esc/q.");
   reset_colors(plane);
 }
 
@@ -1960,12 +1965,9 @@ bool handle_key(uint32_t key, AppState &state, int visible_rows,
     case NCKEY_ENTER:
     case '\n':
     case '\r': {
-      const std::string session_id = state.pending_resume_session_id;
-      const std::string session_cwd = state.pending_resume_session_cwd;
-      state.resume_warning_open = false;
-      state.pending_resume_session_id.clear();
-      state.pending_resume_session_cwd.clear();
-      return !queue_resume_request(state, session_id, session_cwd);
+      close_resume_warning(state,
+                           "Resume blocked: stored session folder is missing.");
+      return true;
     }
     case 27:
     case 'q':
